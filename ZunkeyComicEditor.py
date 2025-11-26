@@ -14,7 +14,7 @@ import io
 # =========================================================
 
 APP_NAME = "Zunkey Comic Editor"
-APP_VERSION = "0.1 Beta"  # 【修正】公開用バージョンに戻しました
+APP_VERSION = "0.1 Beta"
 
 FONT_Config = {
     "メイリオ": {"tk": "Meiryo", "file": "meiryo.ttc"},
@@ -115,7 +115,7 @@ class ZunComiApp:
         tk.Button(bot_row, text="+", command=increment, width=2, bg="white", relief="solid", bd=1).pack(side=tk.LEFT)
         return var
 
-    # --- スマートスクロール設定 ---
+    # --- スマートスクロール ---
     def setup_mouse_scroll(self, widget):
         def _on_mousewheel(event): widget.yview_scroll(int(-1*(event.delta/120)), "units")
         def _bind_wheel(event): self.root.bind_all("<MouseWheel>", _on_mousewheel)
@@ -580,6 +580,7 @@ class ZunComiApp:
         instr = []; mx, my, Mx, My = float('inf'), float('inf'), float('-inf'), float('-inf')
 
         if not text: return [], (x, y, x, y), (0,0,0,0)
+
         if draw is None:
              dummy_img = Image.new("RGBA", (1, 1))
              draw = ImageDraw.Draw(dummy_img)
@@ -595,9 +596,11 @@ class ZunComiApp:
                 if lw>0: lw-=cs_px
                 line_data.append((lw, mh, chrs)); total_h += mh + ls_px
             if total_h > 0: total_h -= ls_px
+            
             if "Top" in av: sy = 0
             elif "Bottom" in av: sy = -total_h
             else: sy = -total_h / 2
+            
             cy = sy
             for lw, lh, chrs in line_data:
                 if "Right" in ah: sx = -lw
@@ -620,9 +623,11 @@ class ZunComiApp:
                 if ch>0: ch -= (cgap + cs_px)
                 cols.append((mcw, ch, cdata)); tw += mcw + ls_px
             if tw>0: tw-=ls_px
+            
             if "Right" in ah: sx = 0
             elif "Center" in ah: sx = tw / 2
             else: sx = tw
+            
             cr = sx
             for cw, ch, chrs in cols:
                 ccx = cr - (cw / 2)
@@ -637,10 +642,12 @@ class ZunComiApp:
                 cr -= (cw + ls_px)
 
         if mx == float('inf'): return [], (x, y, x, y), (0,0,0,0)
+
         block_w = int(Mx - mx + outline_w*2 + 10)
         block_h = int(My - my + outline_w*2 + 10)
         offset_x = -mx + outline_w + 5
         offset_y = -my + outline_w + 5
+        
         return instr, (mx, my, Mx, My), (block_w, block_h, offset_x, offset_y)
 
     def update_canvas_image(self):
@@ -651,6 +658,7 @@ class ZunComiApp:
         nw, nh = int(iw*sc), int(ih*sc); self.img_scale = sc
         self.offset_x, self.offset_y = (cw-nw)//2, (ch-nh)//2
         self.hit_targets = []
+        
         dummy_img = Image.new('RGBA', (1, 1))
         dummy_draw = ImageDraw.Draw(dummy_img)
 
@@ -674,18 +682,22 @@ class ZunComiApp:
                         rot = src.resize((w, h), RESAMPLE_BILINEAR).rotate(o['angle'], expand=True, resample=RESAMPLE_BILINEAR)
                         dx = int(o['x']*sc - rot.width/2); dy = int(o['y']*sc - rot.height/2)
                         base.paste(rot, (dx, dy), rot)
-                        c0 = dx + self.offset_x; r0 = dy + self.offset_y; c1 = c0 + rot.width; r1 = r0 + rot.height
+                        
+                        c0 = dx + self.offset_x; r0 = dy + self.offset_y
+                        c1 = c0 + rot.width; r1 = r0 + rot.height
                         self.hit_targets.append({'type': 'image', 'index': i, 'bbox': (c0, r0, c1, r1)})
             
             for i, o in enumerate(self.text_objects):
                 p_obj = o.copy(); p_obj['size'] = int(o['size'] * sc); p_obj['outline_width'] = int(o.get('outline_width', 0) * sc)
                 p_obj['x'] = 0; p_obj['y'] = 0
+                
                 res = self._calculate_text_geometry(dummy_draw, p_obj)
                 if not res: continue
                 instr, bounds, (bw, bh, offx, offy) = res
                 
                 txt_img = Image.new('RGBA', (bw, bh), (0,0,0,0))
                 d_txt = ImageDraw.Draw(txt_img)
+                
                 out_w = p_obj['outline_width']; out_c = o.get('outline_color', '#ffffff')
                 font = self._get_pil_font(p_obj['font_key'], p_obj['size'])
                 
@@ -700,7 +712,9 @@ class ZunComiApp:
                 final_x = int(bx - rotated_txt.width/2)
                 final_y = int(by - rotated_txt.height/2)
                 base.paste(rotated_txt, (final_x, final_y), rotated_txt)
-                c0 = final_x + self.offset_x; r0 = final_y + self.offset_y; c1 = c0 + rotated_txt.width; r1 = r0 + rotated_txt.height
+                
+                c0 = final_x + self.offset_x; r0 = final_y + self.offset_y
+                c1 = c0 + rotated_txt.width; r1 = r0 + rotated_txt.height
                 self.hit_targets.append({'type': 'text', 'index': i, 'bbox': (c0, r0, c1, r1)})
 
             self.display_pil = base
@@ -720,7 +734,8 @@ class ZunComiApp:
                         if sel_type == 'text':
                              self.canvas.create_line(ax-10, ay, ax+10, ay, fill="red", width=2)
                              self.canvas.create_line(ax, ay-10, ax, ay+10, fill="red", width=2)
-                        else: self.canvas.create_oval(ax-5, ay-5, ax+5, ay+5, fill="red")
+                        else:
+                             self.canvas.create_oval(ax-5, ay-5, ax+5, ay+5, fill="red")
                         break
         except: traceback.print_exc()
 
