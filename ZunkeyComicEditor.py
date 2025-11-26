@@ -14,7 +14,7 @@ import io
 # =========================================================
 
 APP_NAME = "Zunkey Comic Editor"
-APP_VERSION = "1.5 (BugFixed)"
+APP_VERSION = "0.1 Beta"  # 【修正】公開用バージョンに戻しました
 
 FONT_Config = {
     "メイリオ": {"tk": "Meiryo", "file": "meiryo.ttc"},
@@ -27,6 +27,16 @@ FONT_NAMES = list(FONT_Config.keys())
 
 ALIGN_H_OPTIONS = ["右寄せ (Right)", "中央 (Center)", "左寄せ (Left)"]
 ALIGN_V_OPTIONS = ["上寄せ (Top)", "中央 (Middle)", "下寄せ (Bottom)"]
+
+# Pillowのバージョン互換対応
+try:
+    RESAMPLE_LANCZOS = Image.Resampling.LANCZOS
+    RESAMPLE_BICUBIC = Image.Resampling.BICUBIC
+    RESAMPLE_BILINEAR = Image.Resampling.BILINEAR
+except AttributeError:
+    RESAMPLE_LANCZOS = Image.LANCZOS
+    RESAMPLE_BICUBIC = Image.BICUBIC
+    RESAMPLE_BILINEAR = Image.BILINEAR
 
 # =========================================================
 #  メインアプリケーションクラス
@@ -105,7 +115,7 @@ class ZunComiApp:
         tk.Button(bot_row, text="+", command=increment, width=2, bg="white", relief="solid", bd=1).pack(side=tk.LEFT)
         return var
 
-    # --- スマートスクロール ---
+    # --- スマートスクロール設定 ---
     def setup_mouse_scroll(self, widget):
         def _on_mousewheel(event): widget.yview_scroll(int(-1*(event.delta/120)), "units")
         def _bind_wheel(event): self.root.bind_all("<MouseWheel>", _on_mousewheel)
@@ -193,9 +203,7 @@ class ZunComiApp:
         self.var_line_spacing = self.create_smart_slider(sidebar, "行間(%):", 0, 300, 20, self.on_property_change)
         self.var_char_spacing = self.create_smart_slider(sidebar, "文字間(%):", -50, 200, 0, self.on_property_change)
         self.var_outline_width = self.create_smart_slider(sidebar, "縁太さ:", 0, 20, 0, self.on_property_change)
-        # 回転
         self.var_text_angle = self.create_smart_slider(sidebar, "回転(°):", -180, 180, 0, self.on_property_change)
-
         self.var_vertical = tk.BooleanVar(value=True)
         tk.Checkbutton(sidebar, text="縦書き", variable=self.var_vertical, command=self.on_property_change, bg="#f0f0f0").pack(anchor="w")
         align_f = tk.Frame(sidebar, bg="#f0f0f0"); align_f.pack(fill=tk.X)
@@ -231,7 +239,6 @@ class ZunComiApp:
     # ---------------------------------------------------------
     # ロジック
     # ---------------------------------------------------------
-
     def add_asset_image(self):
         file_paths = filedialog.askopenfilenames(filetypes=[("Image files", "*.png;*.jpg;*.jpeg")])
         if not file_paths: return
@@ -242,7 +249,7 @@ class ZunComiApp:
                 asset_id = len(self.asset_images) - 1
                 thumb_w = 140; aspect = img.height / img.width; thumb_h = int(thumb_w * aspect)
                 if thumb_h > 140: thumb_h = 140
-                thumb_pil = img.resize((thumb_w, thumb_h), Image.LANCZOS)
+                thumb_pil = img.resize((thumb_w, thumb_h), RESAMPLE_LANCZOS)
                 thumb_tk = ImageTk.PhotoImage(thumb_pil)
                 self.asset_thumbnails.append(thumb_tk)
                 item_frame = tk.Frame(self.scrollable_frame, bg="#e0e0e0", bd=2, relief="flat")
@@ -445,7 +452,7 @@ class ZunComiApp:
                 if img:
                     self.asset_images.append(img); aid = len(self.asset_images)-1
                     tw=140; aspect=img.height/img.width; th=int(tw*aspect); th=140 if th>140 else th
-                    tk_img = ImageTk.PhotoImage(img.resize((tw, th), Image.LANCZOS))
+                    tk_img = ImageTk.PhotoImage(img.resize((tw, th), RESAMPLE_LANCZOS))
                     self.asset_thumbnails.append(tk_img)
                     fr = tk.Frame(self.scrollable_frame, bg="#e0e0e0", bd=2, relief="flat"); fr.pack(pady=5, padx=5, fill=tk.X)
                     self.asset_frames.append(fr)
@@ -497,7 +504,7 @@ class ZunComiApp:
                 'text': self.placing_text_content, 'x': ix, 'y': iy,
                 'size': self.var_font_size.get(), 'line_spacing': self.var_line_spacing.get(), 'char_spacing': self.var_char_spacing.get(),
                 'outline_width': self.var_outline_width.get(), 'outline_color': self.text_outline_color,
-                'angle': self.var_text_angle.get(), # 追加: 回転初期値
+                'angle': self.var_text_angle.get(), 
                 'color': self.text_color, 'vertical': self.var_vertical.get(), 'font_key': self.combo_font.get(),
                 'align_h': self.combo_align_h.get(), 'align_v': self.combo_align_v.get()
             })
@@ -519,10 +526,8 @@ class ZunComiApp:
             if tag.startswith("text_hit_"): new_sel = {'type': 'text', 'index': int(tag.split("_")[-1])}; break
             if tag.startswith("img_hit_"): new_sel = {'type': 'image', 'index': int(tag.split("_")[-1])}; break
         
-        # 【修正】クリック位置の詳細判定 (回転後の矩形内にあるか？)
         found = None
         for item in reversed(self.hit_targets):
-            # item['bbox'] は (x0, y0, x1, y1)
             x0, y0, x1, y1 = item['bbox']
             if x0 <= event.x <= x1 and y0 <= event.y <= y1:
                 found = {'type': item['type'], 'index': item['index']}
@@ -565,20 +570,16 @@ class ZunComiApp:
         try: return ImageFont.truetype(p, size)
         except: return ImageFont.load_default()
 
-    # 【修正】テキスト回転対応の描画計算
     def _calculate_text_geometry(self, draw, obj):
         text = obj['text']; x = obj['x']; y = obj['y']; size = obj['size']
         ls_px = size * (obj.get('line_spacing', 20)/100.0); cs_px = size * (obj.get('char_spacing', 0)/100.0)
         outline_w = obj.get('outline_width', 0)
-        angle = obj.get('angle', 0) # 回転角度
+        angle = obj.get('angle', 0) 
         vertical = obj['vertical']; font = self._get_pil_font(obj['font_key'], size)
         ah = obj.get('align_h', "Right"); av = obj.get('align_v', "Top")
         instr = []; mx, my, Mx, My = float('inf'), float('inf'), float('-inf'), float('-inf')
 
-        if not text: return [], (x, y, x, y)
-
-        # 1. まず「未回転」の状態でのテキストサイズと描画位置（0,0基準）を計算する
-        # 【修正】draw=None で呼ばれた場合のダミー
+        if not text: return [], (x, y, x, y), (0,0,0,0)
         if draw is None:
              dummy_img = Image.new("RGBA", (1, 1))
              draw = ImageDraw.Draw(dummy_img)
@@ -594,12 +595,9 @@ class ZunComiApp:
                 if lw>0: lw-=cs_px
                 line_data.append((lw, mh, chrs)); total_h += mh + ls_px
             if total_h > 0: total_h -= ls_px
-            
-            # Y基準 (0,0基準)
             if "Top" in av: sy = 0
             elif "Bottom" in av: sy = -total_h
             else: sy = -total_h / 2
-            
             cy = sy
             for lw, lh, chrs in line_data:
                 if "Right" in ah: sx = -lw
@@ -622,12 +620,9 @@ class ZunComiApp:
                 if ch>0: ch -= (cgap + cs_px)
                 cols.append((mcw, ch, cdata)); tw += mcw + ls_px
             if tw>0: tw-=ls_px
-            
-            # X基準
             if "Right" in ah: sx = 0
             elif "Center" in ah: sx = tw / 2
             else: sx = tw
-            
             cr = sx
             for cw, ch, chrs in cols:
                 ccx = cr - (cw / 2)
@@ -642,13 +637,10 @@ class ZunComiApp:
                 cr -= (cw + ls_px)
 
         if mx == float('inf'): return [], (x, y, x, y), (0,0,0,0)
-
-        # 2. ここまでの instr は (0,0) を基準とした相対座標
         block_w = int(Mx - mx + outline_w*2 + 10)
         block_h = int(My - my + outline_w*2 + 10)
         offset_x = -mx + outline_w + 5
         offset_y = -my + outline_w + 5
-        
         return instr, (mx, my, Mx, My), (block_w, block_h, offset_x, offset_y)
 
     def update_canvas_image(self):
@@ -659,14 +651,12 @@ class ZunComiApp:
         nw, nh = int(iw*sc), int(ih*sc); self.img_scale = sc
         self.offset_x, self.offset_y = (cw-nw)//2, (ch-nh)//2
         self.hit_targets = []
-        
-        # 【修正】ダミーDrawオブジェクト (textbbox用)
         dummy_img = Image.new('RGBA', (1, 1))
         dummy_draw = ImageDraw.Draw(dummy_img)
 
         try:
             if self.cache_bg_image is None or self.cache_canvas_size != (nw, nh):
-                self.cache_bg_image = self.original_image.resize((nw, nh), Image.BILINEAR)
+                self.cache_bg_image = self.original_image.resize((nw, nh), RESAMPLE_BILINEAR)
                 self.cache_canvas_size = (nw, nh)
                 if self.strokes:
                     d = ImageDraw.Draw(self.cache_bg_image)
@@ -676,32 +666,26 @@ class ZunComiApp:
 
             base = self.cache_bg_image.copy()
             
-            # 画像
             for i, o in enumerate(self.placed_images):
                 src = self.asset_images[o['src_id']]
                 if src:
                     w = int(src.width*o['scale'] * sc); h = int(src.height*o['scale'] * sc)
                     if w>0 and h>0:
-                        rot = src.resize((w, h), Image.BILINEAR).rotate(o['angle'], expand=True, resample=Image.BILINEAR)
+                        rot = src.resize((w, h), RESAMPLE_BILINEAR).rotate(o['angle'], expand=True, resample=RESAMPLE_BILINEAR)
                         dx = int(o['x']*sc - rot.width/2); dy = int(o['y']*sc - rot.height/2)
                         base.paste(rot, (dx, dy), rot)
-                        c0 = dx + self.offset_x; r0 = dy + self.offset_y
-                        c1 = c0 + rot.width; r1 = r0 + rot.height
+                        c0 = dx + self.offset_x; r0 = dy + self.offset_y; c1 = c0 + rot.width; r1 = r0 + rot.height
                         self.hit_targets.append({'type': 'image', 'index': i, 'bbox': (c0, r0, c1, r1)})
             
-            # テキスト (回転対応)
             for i, o in enumerate(self.text_objects):
                 p_obj = o.copy(); p_obj['size'] = int(o['size'] * sc); p_obj['outline_width'] = int(o.get('outline_width', 0) * sc)
                 p_obj['x'] = 0; p_obj['y'] = 0
-                
-                # 【修正】ダミーDrawを渡す
                 res = self._calculate_text_geometry(dummy_draw, p_obj)
                 if not res: continue
                 instr, bounds, (bw, bh, offx, offy) = res
                 
                 txt_img = Image.new('RGBA', (bw, bh), (0,0,0,0))
                 d_txt = ImageDraw.Draw(txt_img)
-                
                 out_w = p_obj['outline_width']; out_c = o.get('outline_color', '#ffffff')
                 font = self._get_pil_font(p_obj['font_key'], p_obj['size'])
                 
@@ -709,16 +693,14 @@ class ZunComiApp:
                     d_txt.text((x['x'] + offx, x['y'] + offy), x['text'], font=font, fill=o['color'], anchor=x.get('anchor', 'lt'), stroke_width=out_w, stroke_fill=out_c)
                 
                 angle = o.get('angle', 0)
-                if angle != 0: rotated_txt = txt_img.rotate(angle, expand=True, resample=Image.BILINEAR)
+                if angle != 0: rotated_txt = txt_img.rotate(angle, expand=True, resample=RESAMPLE_BILINEAR)
                 else: rotated_txt = txt_img
                 
                 bx = o['x']*sc; by = o['y']*sc
                 final_x = int(bx - rotated_txt.width/2)
                 final_y = int(by - rotated_txt.height/2)
                 base.paste(rotated_txt, (final_x, final_y), rotated_txt)
-                
-                c0 = final_x + self.offset_x; r0 = final_y + self.offset_y
-                c1 = c0 + rotated_txt.width; r1 = r0 + rotated_txt.height
+                c0 = final_x + self.offset_x; r0 = final_y + self.offset_y; c1 = c0 + rotated_txt.width; r1 = r0 + rotated_txt.height
                 self.hit_targets.append({'type': 'text', 'index': i, 'bbox': (c0, r0, c1, r1)})
 
             self.display_pil = base
@@ -726,7 +708,6 @@ class ZunComiApp:
             self.canvas.delete("all")
             self.canvas.create_image(self.offset_x, self.offset_y, anchor=tk.NW, image=self.display_image)
 
-            # 選択枠描画
             if self.selected_item:
                 sel_idx = self.selected_item['index']; sel_type = self.selected_item['type']
                 for item in reversed(self.hit_targets):
@@ -739,8 +720,7 @@ class ZunComiApp:
                         if sel_type == 'text':
                              self.canvas.create_line(ax-10, ay, ax+10, ay, fill="red", width=2)
                              self.canvas.create_line(ax, ay-10, ax, ay+10, fill="red", width=2)
-                        else:
-                             self.canvas.create_oval(ax-5, ay-5, ax+5, ay+5, fill="red")
+                        else: self.canvas.create_oval(ax-5, ay-5, ax+5, ay+5, fill="red")
                         break
         except: traceback.print_exc()
 
@@ -749,47 +729,31 @@ class ZunComiApp:
         path = filedialog.asksaveasfilename(defaultextension=".png", filetypes=[("PNG", "*.png")])
         if not path: return
         final = self.original_image.copy(); d = ImageDraw.Draw(final)
-        
-        # 【修正】保存時用のダミーDraw
         dummy_draw = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
-        
         for sx, sy, sz, c in self.strokes: r=sz/2; d.ellipse((sx-r, sy-r, sx+r, sy+r), fill=c)
         for o in self.placed_images:
             src = self.asset_images[o['src_id']]
             if src:
                 w = int(src.width*o['scale']); h = int(src.height*o['scale'])
                 if w>0 and h>0:
-                    rot = src.resize((w, h), Image.LANCZOS).rotate(o['angle'], expand=True, resample=Image.BICUBIC)
+                    rot = src.resize((w, h), RESAMPLE_LANCZOS).rotate(o['angle'], expand=True, resample=RESAMPLE_BICUBIC)
                     dx = int(o['x']-rot.width/2); dy = int(o['y']-rot.height/2)
                     final.paste(rot, (dx, dy), rot)
-        
-        # テキスト保存
         for o in self.text_objects:
-            p_obj = o.copy() # オリジナルサイズ
-            p_obj['x']=0; p_obj['y']=0
-            
-            # ジオメトリ計算
+            p_obj = o.copy(); p_obj['x']=0; p_obj['y']=0
             res = self._calculate_text_geometry(dummy_draw, p_obj)
             if not res: continue
             instr, bounds, (bw, bh, offx, offy) = res
-            
-            txt_img = Image.new('RGBA', (bw, bh), (0,0,0,0))
-            d_txt = ImageDraw.Draw(txt_img)
-            
+            txt_img = Image.new('RGBA', (bw, bh), (0,0,0,0)); d_txt = ImageDraw.Draw(txt_img)
             out_w = p_obj.get('outline_width', 0); out_c = o.get('outline_color', '#ffffff')
             font = self._get_pil_font(p_obj['font_key'], p_obj['size'])
-            
             for x in instr:
                 d_txt.text((x['x'] + offx, x['y'] + offy), x['text'], font=font, fill=o['color'], anchor=x.get('anchor', 'lt'), stroke_width=out_w, stroke_fill=out_c)
-            
             angle = o.get('angle', 0)
-            if angle != 0: rotated_txt = txt_img.rotate(angle, expand=True, resample=Image.BICUBIC)
+            if angle != 0: rotated_txt = txt_img.rotate(angle, expand=True, resample=RESAMPLE_BICUBIC)
             else: rotated_txt = txt_img
-            
-            final_x = int(o['x'] - rotated_txt.width/2)
-            final_y = int(o['y'] - rotated_txt.height/2)
+            final_x = int(o['x'] - rotated_txt.width/2); final_y = int(o['y'] - rotated_txt.height/2)
             final.paste(rotated_txt, (final_x, final_y), rotated_txt)
-            
         final.save(path); messagebox.showinfo("OK", "保存しました")
 
 if __name__ == "__main__":
