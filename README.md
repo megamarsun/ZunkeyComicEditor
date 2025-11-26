@@ -4,7 +4,7 @@
 Python製で、直感的な操作が特徴です。
 
 ![ZunComi](https://via.placeholder.com/800x400?text=Screenshot+Here)
-*(スクリーンショットがあればここに貼ると親切です)*
+
 
 ## 📥 ダウンロード
 実行ファイル（EXE版）は **note** にて配布しています。
