@@ -1,6 +1,6 @@
 import tkinter as tk
 from tkinter import filedialog, colorchooser, messagebox, ttk, scrolledtext
-from PIL import Image, ImageTk, ImageDraw, ImageFont
+from PIL import Image, ImageTk, ImageDraw, ImageFont, ImageOps
 import sys
 import os
 import traceback
@@ -8,27 +8,40 @@ import copy
 import json
 import base64
 import io
+import math
 
 # =========================================================
 #  設定・定数
 # =========================================================
 
 APP_NAME = "Zunkey Comic Editor"
-APP_VERSION = "0.1 Beta"
+APP_VERSION = "1.9 PureCenter"
 
-FONT_Config = {
-    "メイリオ": {"tk": "Meiryo", "file": "meiryo.ttc"},
-    "MS ゴシック": {"tk": "MS Gothic", "file": "msgothic.ttc"},
-    "MS 明朝": {"tk": "MS Mincho", "file": "msmincho.ttc"},
-    "游ゴシック": {"tk": "Yu Gothic", "file": "YuGothB.ttc"},
-    "Arial": {"tk": "Arial", "file": "arial.ttf"}
+# フォント設定
+FONT_PATHS = {
+    "メイリオ": "C:/Windows/Fonts/meiryo.ttc",
+    "游ゴシック": "C:/Windows/Fonts/YuGothB.ttc",
+    "MS ゴシック": "C:/Windows/Fonts/msgothic.ttc",
+    "MS 明朝": "C:/Windows/Fonts/msmincho.ttc",
+    "Arial": "arial.ttf"
 }
-FONT_NAMES = list(FONT_Config.keys())
+FONT_NAMES = list(FONT_PATHS.keys())
 
-ALIGN_H_OPTIONS = ["右寄せ (Right)", "中央 (Center)", "左寄せ (Left)"]
+# 縦書き用 文字置換マップ
+VERTICAL_CHAR_MAP = {
+    '、': '︑', '。': '︒', 
+    '「': '﹁', '」': '﹂', 
+    '『': '﹃', '』': '﹄',
+    '（': '︵', '）': '︶', '(': '︵', ')': '︶',
+    '[': '︻', ']': '︼', '{': '︷', '}': '︸',
+    '＜': '︿', '＞': '﹀', '＝': '‖', '〜': '⌇', '~': '⌇',
+    '！': '！', '？': '？', '!': '！', '?': '？'
+}
+ROTATE_CHARS = {'…', '‥', 'ー', '-', ':', ';'}
+
+ALIGN_H_OPTIONS = ["左寄せ (Left)", "中央 (Center)", "右寄せ (Right)"]
 ALIGN_V_OPTIONS = ["上寄せ (Top)", "中央 (Middle)", "下寄せ (Bottom)"]
 
-# Pillowのバージョン互換対応
 try:
     RESAMPLE_LANCZOS = Image.Resampling.LANCZOS
     RESAMPLE_BICUBIC = Image.Resampling.BICUBIC
@@ -46,8 +59,7 @@ class ZunComiApp:
     def __init__(self, root):
         self.root = root
         self.root.title(f"{APP_NAME} v{APP_VERSION}")
-        self.root.geometry("1280x850")
-        self.root.state('zoomed') 
+        self.root.geometry("1400x950")
 
         # --- データ管理 ---
         self.original_image = None
@@ -80,7 +92,9 @@ class ZunComiApp:
         self.placing_image_id = None 
         
         self.drag_data = {"x": 0, "y": 0, "item": None}
-        self.font_names = list(FONT_Config.keys())
+        self.font_names = list(FONT_PATHS.keys())
+        self.font_cache = {}
+        self.custom_font_path = None
 
         self.history_stack = []
         self.redo_stack = []
@@ -93,7 +107,7 @@ class ZunComiApp:
         self.root.bind("<Control-z>", self.undo)
         self.root.bind("<Control-y>", self.redo)
 
-    # --- スマートスライダー ---
+    # --- UI Components ---
     def create_smart_slider(self, parent, label_text, from_, to, initial_val, callback):
         container = tk.Frame(parent, bg="#f0f0f0", pady=2)
         container.pack(fill=tk.X)
@@ -115,7 +129,6 @@ class ZunComiApp:
         tk.Button(bot_row, text="+", command=increment, width=2, bg="white", relief="solid", bd=1).pack(side=tk.LEFT)
         return var
 
-    # --- スマートスクロール ---
     def setup_mouse_scroll(self, widget):
         def _on_mousewheel(event): widget.yview_scroll(int(-1*(event.delta/120)), "units")
         def _bind_wheel(event): self.root.bind_all("<MouseWheel>", _on_mousewheel)
@@ -195,17 +208,21 @@ class ZunComiApp:
         tk.Button(prop_row1, text="色", command=self.choose_text_color, width=3).pack(side=tk.LEFT, padx=2)
         self.lbl_outline_color_preview = tk.Label(prop_row1, bg=self.text_outline_color, width=3, relief="solid", borderwidth=1); self.lbl_outline_color_preview.pack(side=tk.LEFT, padx=(10, 2))
         tk.Button(prop_row1, text="縁色", command=self.choose_outline_color, width=4).pack(side=tk.LEFT, padx=2)
+        
         prop_row_font = tk.Frame(sidebar, bg="#f0f0f0"); prop_row_font.pack(fill=tk.X, pady=2)
-        self.combo_font = ttk.Combobox(prop_row_font, values=self.font_names, state="readonly", width=18); self.combo_font.current(0); self.combo_font.pack(side=tk.LEFT, padx=2)
+        self.combo_font = ttk.Combobox(prop_row_font, values=self.font_names + ["(カスタム)"], state="readonly", width=18); self.combo_font.current(0); self.combo_font.pack(side=tk.LEFT, padx=2)
         self.combo_font.bind("<<ComboboxSelected>>", self.on_property_change)
-        tk.Button(prop_row_font, text="+", command=self.add_custom_font, width=2).pack(side=tk.LEFT)
+        tk.Button(prop_row_font, text="📂", command=self.add_custom_font, width=3).pack(side=tk.LEFT)
+        
         self.var_font_size = self.create_smart_slider(sidebar, "サイズ:", 10, 300, 40, self.on_property_change)
-        self.var_line_spacing = self.create_smart_slider(sidebar, "行間(%):", 0, 300, 20, self.on_property_change)
+        self.var_line_spacing = self.create_smart_slider(sidebar, "行間(%):", -50, 300, 20, self.on_property_change)
         self.var_char_spacing = self.create_smart_slider(sidebar, "文字間(%):", -50, 200, 0, self.on_property_change)
-        self.var_outline_width = self.create_smart_slider(sidebar, "縁太さ:", 0, 20, 0, self.on_property_change)
+        self.var_outline_width = self.create_smart_slider(sidebar, "縁太さ:", 0, 30, 2, self.on_property_change)
         self.var_text_angle = self.create_smart_slider(sidebar, "回転(°):", -180, 180, 0, self.on_property_change)
-        self.var_vertical = tk.BooleanVar(value=True)
-        tk.Checkbutton(sidebar, text="縦書き", variable=self.var_vertical, command=self.on_property_change, bg="#f0f0f0").pack(anchor="w")
+        
+        self.var_vertical = tk.BooleanVar(value=True) 
+        tk.Checkbutton(sidebar, text="縦書き (Vertical)", variable=self.var_vertical, command=self.on_property_change, bg="#f0f0f0").pack(anchor="w")
+        
         align_f = tk.Frame(sidebar, bg="#f0f0f0"); align_f.pack(fill=tk.X)
         self.combo_align_h = ttk.Combobox(align_f, values=ALIGN_H_OPTIONS, state="readonly", width=13); self.combo_align_h.current(0); self.combo_align_h.pack(side=tk.LEFT)
         self.combo_align_h.bind("<<ComboboxSelected>>", self.on_property_change)
@@ -237,7 +254,261 @@ class ZunComiApp:
         self.root.bind("<Configure>", self.on_resize_window)
 
     # ---------------------------------------------------------
-    # ロジック
+    # ロジック: フォント読み込み
+    # ---------------------------------------------------------
+    def _get_pil_font(self, font_key, size, use_custom=False):
+        key = (font_key, size, use_custom)
+        if key in self.font_cache: return self.font_cache[key]
+
+        font = None
+        if use_custom and self.custom_font_path:
+            try: font = ImageFont.truetype(self.custom_font_path, size); return font
+            except: pass
+        
+        target_path = FONT_PATHS.get(font_key)
+        if target_path and os.path.exists(target_path):
+            for i in range(3):
+                try: font = ImageFont.truetype(target_path, size, index=i); break
+                except: continue
+        
+        if not font:
+            try: font = ImageFont.truetype("C:/Windows/Fonts/meiryo.ttc", size); pass
+            except: pass
+
+        if not font: font = ImageFont.load_default()
+        self.font_cache[key] = font
+        return font
+
+    # ---------------------------------------------------------
+    # ロジック: 描画 (Pure Center Fix)
+    # ---------------------------------------------------------
+    def _render_text_item(self, obj):
+        try:
+            text = obj['text']; size = obj['size']
+            f_key = obj.get('font_key', 'メイリオ')
+            font = self._get_pil_font(f_key, size, obj.get('use_custom', False))
+            color = obj['color']
+            stroke_w = obj.get('outline_width', 0)
+            stroke_c = obj.get('outline_color', 'white')
+            vertical = obj['vertical']
+            ls_px = size * (obj.get('line_spacing', 20) / 100.0)
+            cs_px = size * (obj.get('char_spacing', 0) / 100.0)
+            angle = obj.get('angle', 0)
+            align_h = obj.get('align_h', "左寄せ (Left)")
+            align_v = obj.get('align_v', "上寄せ (Top)")
+
+            if not text: return None
+
+            if vertical: text = text.replace("...", "…").replace("。。。", "…")
+            lines = text.split('\n')
+            line_images = []
+            dummy_draw = ImageDraw.Draw(Image.new("RGBA", (1,1)))
+
+            if vertical:
+                # === 縦書き ===
+                for line in lines:
+                    chars = []
+                    for char in line:
+                        d_char = VERTICAL_CHAR_MAP.get(char, char) if char in VERTICAL_CHAR_MAP else char
+                        need_rotation = (char in ROTATE_CHARS)
+                        if need_rotation: d_char = char 
+
+                        try: bbox = dummy_draw.textbbox((0,0), d_char, font=font, stroke_width=stroke_w)
+                        except: bbox = (0, 0, size, size)
+                        
+                        cw, ch = bbox[2]-bbox[0], bbox[3]-bbox[1]
+                        if cw<=0: cw=size//2
+                        if ch<=0: ch=size
+
+                        if need_rotation:
+                            # 回転時は正方形セルを作る
+                            box_size = max(cw, ch) + stroke_w*4 + 4; box_size = max(box_size, size+stroke_w*2)
+                            iw, ih = box_size, box_size
+                        else:
+                            iw, ih = cw+stroke_w*2+4, ch+stroke_w*2+4
+                        
+                        img = Image.new("RGBA", (iw, ih), (0,0,0,0))
+                        d = ImageDraw.Draw(img)
+
+                        if need_rotation:
+                            # ★修正: 余計な補正を削除し、純粋なセンタリングを行う
+                            text_w = bbox[2] - bbox[0]
+                            text_h = bbox[3] - bbox[1]
+                            cx, cy = iw / 2, ih / 2
+                            
+                            # 画像中心 - 文字中心 - 左上マージン
+                            x = cx - (text_w / 2) - bbox[0]
+                            y = cy - (text_h / 2) - bbox[1]
+                            
+                            d.text((x, y), d_char, font=font, fill=color, stroke_width=stroke_w, stroke_fill=stroke_c)
+                            img = img.rotate(-90, resample=RESAMPLE_BICUBIC)
+                        else:
+                            d.text((stroke_w+2-bbox[0], stroke_w+2-bbox[1]), d_char, font=font, fill=color, stroke_width=stroke_w, stroke_fill=stroke_c)
+                        chars.append(img)
+                    line_images.append(chars)
+                
+                # 結合 & 揃え
+                line_dims = []; total_w = 0; max_line_h = 0
+                for chars in line_images:
+                    w = size; h = 0
+                    for c in chars: h += size + cs_px
+                    if h>0: h -= cs_px
+                    line_dims.append((w, h))
+                    total_w += w + ls_px; max_line_h = max(max_line_h, h)
+                if total_w>0: total_w -= ls_px
+                
+                full_img = Image.new("RGBA", (int(total_w), int(max_line_h)), (0,0,0,0))
+                current_x = total_w
+                
+                for i, chars in enumerate(line_images):
+                    w, h = line_dims[i]
+                    current_x -= w
+                    
+                    current_y = 0
+                    if "下寄せ" in align_v or "Bottom" in align_v: current_y = max_line_h - h
+                    elif "中央" in align_v or "Middle" in align_v: current_y = (max_line_h - h) / 2
+                    
+                    for char_img in chars:
+                        paste_x = int(current_x + (w - char_img.width)/2)
+                        paste_y = int(current_y + (size - char_img.height)/2) # 文字高さの中央へ
+                        
+                        full_img.alpha_composite(char_img, (paste_x, paste_y))
+                        # プロポーショナル移動（ここでは簡易的にサイズ送り）
+                        current_y += char_img.height + cs_px
+                    current_x -= ls_px
+
+            else:
+                # === 横書き ===
+                for line in lines:
+                    chars = []
+                    for char in line:
+                        bbox = dummy_draw.textbbox((0,0), char, font=font, stroke_width=stroke_w)
+                        cw = bbox[2]
+                        if cw<=0: cw=size//2
+                        iw = cw + stroke_w*4
+                        ih = int(size*1.5) + stroke_w*4
+                        img = Image.new("RGBA", (iw, ih), (0,0,0,0))
+                        d = ImageDraw.Draw(img)
+                        d.text((stroke_w, stroke_w), char, font=font, fill=color, stroke_width=stroke_w, stroke_fill=stroke_c)
+                        chars.append(img)
+                    line_images.append(chars)
+                
+                line_dims = []; total_h = 0; max_line_w = 0
+                for chars in line_images:
+                    h = int(size*1.5); w = 0
+                    for c in chars: w += c.width + cs_px
+                    if w>0: w -= cs_px
+                    line_dims.append((w, h))
+                    total_h += h + ls_px; max_line_w = max(max_line_w, w)
+                if total_h>0: total_h -= ls_px
+                
+                full_img = Image.new("RGBA", (int(max_line_w), int(total_h)), (0,0,0,0))
+                current_y = 0
+                for i, chars in enumerate(line_images):
+                    w, h = line_dims[i]
+                    
+                    current_x = 0
+                    if "右寄せ" in align_h or "Right" in align_h: current_x = max_line_w - w
+                    elif "中央" in align_h or "Center" in align_h: current_x = (max_line_w - w) / 2
+                    
+                    for char_img in chars:
+                        full_img.alpha_composite(char_img, (int(current_x), int(current_y)))
+                        current_x += char_img.width + cs_px - stroke_w*2
+                    current_y += size + ls_px
+
+            if angle != 0:
+                full_img = full_img.rotate(angle, expand=True, resample=RESAMPLE_BICUBIC)
+            return full_img
+        except Exception:
+            traceback.print_exc()
+            return None
+
+    def _render_image_item(self, obj):
+        try:
+            src = self.asset_images[obj['src_id']]
+            if not src: return None
+            w = int(src.width * obj['scale']); h = int(src.height * obj['scale'])
+            if w<=0 or h<=0: return None
+            angle = obj['angle']
+            img = src.resize((w, h), RESAMPLE_LANCZOS)
+            if angle != 0: img = img.rotate(angle, expand=True, resample=RESAMPLE_BICUBIC)
+            return img
+        except Exception:
+            return None
+
+    # ---------------------------------------------------------
+    # UI更新 (Canvas描画)
+    # ---------------------------------------------------------
+    def update_canvas_image(self):
+        if not self.original_image: return
+        try:
+            cw, ch = self.canvas.winfo_width(), self.canvas.winfo_height()
+            if cw<10 or ch<10: return
+            iw, ih = self.original_image.size
+            sc = min(cw/iw, ch/ih)
+            self.img_scale = sc
+            nw, nh = int(iw*sc), int(ih*sc)
+            self.offset_x, self.offset_y = (cw-nw)//2, (ch-nh)//2
+            
+            self.hit_targets = []
+
+            if self.cache_bg_image is None or self.cache_canvas_size != (nw, nh):
+                self.cache_bg_image = self.original_image.resize((nw, nh), RESAMPLE_BILINEAR)
+                self.cache_canvas_size = (nw, nh)
+                if self.strokes:
+                    d = ImageDraw.Draw(self.cache_bg_image)
+                    for sx, sy, sz, c in self.strokes:
+                        rsx=sx*sc; rsy=sy*sc; rsz=sz*sc; r=rsz/2
+                        d.ellipse((rsx-r, rsy-r, rsx+r, rsy+r), fill=c)
+            
+            base = self.cache_bg_image.copy()
+
+            for i, o in enumerate(self.placed_images):
+                img_obj = self._render_image_item(o)
+                if img_obj:
+                    cx = o['x']*sc; cy = o['y']*sc
+                    px = int(cx - img_obj.width/2); py = int(cy - img_obj.height/2)
+                    base.paste(img_obj, (px, py), img_obj)
+                    c0 = px + self.offset_x; r0 = py + self.offset_y
+                    c1 = c0 + img_obj.width; r1 = r0 + img_obj.height
+                    self.hit_targets.append({'type': 'image', 'index': i, 'bbox': (c0, r0, c1, r1)})
+
+            for i, o in enumerate(self.text_objects):
+                p_obj = o.copy()
+                p_obj['size'] = int(o['size'] * sc)
+                p_obj['outline_width'] = int(o.get('outline_width', 0) * sc)
+                
+                img_obj = self._render_text_item(p_obj)
+                if img_obj:
+                    cx = o['x']*sc; cy = o['y']*sc
+                    px = int(cx - img_obj.width/2); py = int(cy - img_obj.height/2)
+                    base.paste(img_obj, (px, py), img_obj)
+                    c0 = px + self.offset_x; r0 = py + self.offset_y
+                    c1 = c0 + img_obj.width; r1 = r0 + img_obj.height
+                    self.hit_targets.append({'type': 'text', 'index': i, 'bbox': (c0, r0, c1, r1)})
+
+            self.display_pil = base
+            self.display_image = ImageTk.PhotoImage(self.display_pil)
+            self.canvas.delete("all")
+            self.canvas.create_image(self.offset_x, self.offset_y, anchor=tk.NW, image=self.display_image)
+
+            if self.selected_item:
+                sel_idx = self.selected_item['index']; sel_type = self.selected_item['type']
+                for item in reversed(self.hit_targets):
+                    if item['type'] == sel_type and item['index'] == sel_idx:
+                        c0, r0, c1, r1 = item['bbox']
+                        self.canvas.create_rectangle(c0, r0, c1, r1, outline="blue", dash=(4,4), width=2)
+                        if sel_type == 'text': obj=self.text_objects[sel_idx]
+                        else: obj=self.placed_images[sel_idx]
+                        ax = obj['x']*sc+self.offset_x; ay = obj['y']*sc+self.offset_y
+                        self.canvas.create_line(ax-10, ay, ax+10, ay, fill="red", width=2)
+                        self.canvas.create_line(ax, ay-10, ax, ay+10, fill="red", width=2)
+                        break
+        except Exception:
+            traceback.print_exc()
+
+    # ---------------------------------------------------------
+    # 操作系
     # ---------------------------------------------------------
     def add_asset_image(self):
         file_paths = filedialog.askopenfilenames(filetypes=[("Image files", "*.png;*.jpg;*.jpeg")])
@@ -302,6 +573,7 @@ class ZunComiApp:
             obj['angle'] = self.var_text_angle.get()
             obj['vertical'] = self.var_vertical.get()
             obj['font_key'] = self.combo_font.get()
+            obj['use_custom'] = (obj['font_key'] == "(カスタム)")
             obj['align_h'] = self.combo_align_h.get() 
             obj['align_v'] = self.combo_align_v.get() 
             self.update_canvas_image()
@@ -326,7 +598,8 @@ class ZunComiApp:
             self.var_outline_width.set(obj.get('outline_width', 0))
             self.var_text_angle.set(obj.get('angle', 0))
             self.var_vertical.set(obj['vertical'])
-            self.combo_font.set(obj['font_key'])
+            if obj.get('use_custom'): self.combo_font.set("(カスタム)")
+            else: self.combo_font.set(obj['font_key'])
             self.combo_align_h.set(obj.get('align_h', ALIGN_H_OPTIONS[0]))
             self.combo_align_v.set(obj.get('align_v', ALIGN_V_OPTIONS[0]))
             self.text_color = obj['color']; self.lbl_text_color_preview.config(bg=self.text_color)
@@ -372,10 +645,11 @@ class ZunComiApp:
     def add_custom_font(self):
         path = filedialog.askopenfilename(filetypes=[("Font", "*.ttf;*.ttc;*.otf")])
         if path:
-            name = os.path.splitext(os.path.basename(path))[0]
-            FONT_Config[name] = {"tk": "Arial", "file": path}
-            self.font_names = list(FONT_Config.keys()); self.combo_font['values'] = self.font_names; self.combo_font.set(name)
-            if self.selected_item and self.selected_item['type'] == 'text': self.save_history(); self.on_property_change()
+            self.custom_font_path = path
+            self.combo_font.set("(カスタム)")
+            if self.selected_item and self.selected_item['type'] == 'text':
+                self.text_objects[self.selected_item['index']]['use_custom'] = True
+                self.save_history(); self.update_canvas_image()
 
     def register_text(self):
         text = self.input_text_box.get("1.0", "end-1c")
@@ -430,8 +704,7 @@ class ZunComiApp:
             "asset_images": [self.img_to_base64(i) for i in self.asset_images],
             "registered_texts": self.text_listbox.get(0, tk.END),
             "text_objects": self.text_objects, "placed_images": self.placed_images, "strokes": self.strokes,
-            "brush_color": self.brush_color, "text_color": self.text_color, "text_outline_color": self.text_outline_color,
-            "custom_fonts": {k: v["file"] for k, v in FONT_Config.items() if k not in ["メイリオ", "MS ゴシック", "MS 明朝", "游ゴシック", "Arial"]}
+            "brush_color": self.brush_color, "text_color": self.text_color, "text_outline_color": self.text_outline_color
         }
         try:
             with open(path, 'w', encoding='utf-8') as f: json.dump(data, f, ensure_ascii=False, indent=2)
@@ -464,9 +737,6 @@ class ZunComiApp:
             self.text_objects = d.get("text_objects", []); self.placed_images = d.get("placed_images", []); self.strokes = d.get("strokes", [])
             self.brush_color = d.get("brush_color", "#ffffff"); self.text_color = d.get("text_color", "#000000"); self.text_outline_color = d.get("text_outline_color", "#ffffff")
             self.lbl_eraser_preview.config(bg=self.brush_color); self.lbl_text_color_preview.config(bg=self.text_color); self.lbl_outline_color_preview.config(bg=self.text_outline_color)
-            for n, p in d.get("custom_fonts", {}).items(): 
-                if os.path.exists(p): FONT_Config[n] = {"tk": "Arial", "file": p}
-            self.font_names = list(FONT_Config.keys()); self.combo_font['values'] = self.font_names
             self.update_canvas_image(); messagebox.showinfo("完了", "読み込みました")
         except Exception as e: messagebox.showerror("エラー", f"{e}")
 
@@ -506,6 +776,7 @@ class ZunComiApp:
                 'outline_width': self.var_outline_width.get(), 'outline_color': self.text_outline_color,
                 'angle': self.var_text_angle.get(), 
                 'color': self.text_color, 'vertical': self.var_vertical.get(), 'font_key': self.combo_font.get(),
+                'use_custom': (self.combo_font.get() == "(カスタム)"),
                 'align_h': self.combo_align_h.get(), 'align_v': self.combo_align_v.get()
             })
             self.placing_text_content = None; self.text_listbox.selection_clear(0, tk.END); self.btn_list_update.config(state=tk.DISABLED, bg="#ffebcd"); self.root.config(cursor="")
@@ -521,11 +792,6 @@ class ZunComiApp:
 
         if self.brush_active: self._add_stroke(ix, iy); return
 
-        clicked = self.canvas.find_closest(event.x, event.y); tags = self.canvas.gettags(clicked); new_sel = None
-        for tag in tags:
-            if tag.startswith("text_hit_"): new_sel = {'type': 'text', 'index': int(tag.split("_")[-1])}; break
-            if tag.startswith("img_hit_"): new_sel = {'type': 'image', 'index': int(tag.split("_")[-1])}; break
-        
         found = None
         for item in reversed(self.hit_targets):
             x0, y0, x1, y1 = item['bbox']
@@ -546,8 +812,15 @@ class ZunComiApp:
         if self.brush_active: self._add_stroke(ix, iy)
         elif self.drag_data["item"]:
             sel = self.drag_data["item"]; idx = sel['index']
-            if sel['type'] == 'text': self.text_objects[idx]['x'] = ix; self.text_objects[idx]['y'] = iy
-            elif sel['type'] == 'image': self.placed_images[idx]['x'] = ix; self.placed_images[idx]['y'] = iy
+            dx = event.x - self.drag_data["x"]; dy = event.y - self.drag_data["y"]
+            if sel['type'] == 'text':
+                self.text_objects[idx]['x'] += dx / self.img_scale
+                self.text_objects[idx]['y'] += dy / self.img_scale
+            elif sel['type'] == 'image':
+                self.placed_images[idx]['x'] += dx / self.img_scale
+                self.placed_images[idx]['y'] += dy / self.img_scale
+            
+            self.drag_data["x"] = event.x; self.drag_data["y"] = event.y
             self.update_canvas_image()
 
     def on_canvas_release(self, event):
@@ -563,182 +836,6 @@ class ZunComiApp:
     def on_resize_window(self, event):
         if self.original_image: self.update_canvas_image()
 
-    def _get_pil_font(self, font_key, size):
-        f = FONT_Config.get(font_key, {"file": "arial.ttf"})["file"]
-        p = f if os.path.isabs(f) else os.path.join("C:/Windows/Fonts", f)
-        if not os.path.exists(p) and os.path.exists(f): p = f
-        try: return ImageFont.truetype(p, size)
-        except: return ImageFont.load_default()
-
-    def _calculate_text_geometry(self, draw, obj):
-        text = obj['text']; x = obj['x']; y = obj['y']; size = obj['size']
-        ls_px = size * (obj.get('line_spacing', 20)/100.0); cs_px = size * (obj.get('char_spacing', 0)/100.0)
-        outline_w = obj.get('outline_width', 0)
-        angle = obj.get('angle', 0) 
-        vertical = obj['vertical']; font = self._get_pil_font(obj['font_key'], size)
-        ah = obj.get('align_h', "Right"); av = obj.get('align_v', "Top")
-        instr = []; mx, my, Mx, My = float('inf'), float('inf'), float('-inf'), float('-inf')
-
-        if not text: return [], (x, y, x, y), (0,0,0,0)
-
-        if draw is None:
-             dummy_img = Image.new("RGBA", (1, 1))
-             draw = ImageDraw.Draw(dummy_img)
-        
-        if not vertical:
-            lines = text.split('\n'); line_data = []; total_h = 0
-            for l in lines:
-                if not l: line_data.append((0, size, [])); total_h += size + ls_px; continue
-                chrs = []; lw = 0; mh = 0
-                for c in l:
-                    bb = draw.textbbox((0,0), c, font=font); w = bb[2]-bb[0]; h = bb[3]-bb[1]
-                    chrs.append((c, w)); lw += w + cs_px; mh = max(mh, h)
-                if lw>0: lw-=cs_px
-                line_data.append((lw, mh, chrs)); total_h += mh + ls_px
-            if total_h > 0: total_h -= ls_px
-            
-            if "Top" in av: sy = 0
-            elif "Bottom" in av: sy = -total_h
-            else: sy = -total_h / 2
-            
-            cy = sy
-            for lw, lh, chrs in line_data:
-                if "Right" in ah: sx = -lw
-                elif "Left" in ah: sx = 0
-                else: sx = -lw / 2
-                cx = sx
-                for c, cw in chrs:
-                    instr.append({'x':cx, 'y':cy, 'text':c, 'anchor':'lt'})
-                    mx=min(mx,cx); my=min(my,cy); Mx=max(Mx,cx+cw); My=max(My,cy+lh)
-                    cx += cw + cs_px
-                cy += lh + ls_px
-        else:
-            lines = text.split('\n'); cols = []; tw = 0; cgap = size * 0.05
-            for l in lines:
-                if not l: cols.append((size/2, 0, [])); tw += size/2 + ls_px; continue
-                cdata = []; ch = 0; mcw = 0
-                for c in l:
-                    bb = draw.textbbox((0,0), c, font=font); w = bb[2]-bb[0]; h = bb[3]-bb[1]
-                    cdata.append((c, w, h)); ch += h + cgap + cs_px; mcw = max(mcw, w)
-                if ch>0: ch -= (cgap + cs_px)
-                cols.append((mcw, ch, cdata)); tw += mcw + ls_px
-            if tw>0: tw-=ls_px
-            
-            if "Right" in ah: sx = 0
-            elif "Center" in ah: sx = tw / 2
-            else: sx = tw
-            
-            cr = sx
-            for cw, ch, chrs in cols:
-                ccx = cr - (cw / 2)
-                if "Top" in av: cy = 0
-                elif "Bottom" in av: cy = -ch
-                else: cy = -ch / 2
-                for c, w, h in chrs:
-                    instr.append({'x':ccx, 'y':cy, 'text':c, 'anchor':'mt'})
-                    l = ccx-w/2; t = cy; r = ccx+w/2; b = cy+h
-                    mx=min(mx,l); my=min(my,t); Mx=max(Mx,r); My=max(My,b)
-                    cy += h + cgap + cs_px
-                cr -= (cw + ls_px)
-
-        if mx == float('inf'): return [], (x, y, x, y), (0,0,0,0)
-
-        block_w = int(Mx - mx + outline_w*2 + 10)
-        block_h = int(My - my + outline_w*2 + 10)
-        offset_x = -mx + outline_w + 5
-        offset_y = -my + outline_w + 5
-        
-        return instr, (mx, my, Mx, My), (block_w, block_h, offset_x, offset_y)
-
-    def update_canvas_image(self):
-        if not self.original_image: return
-        cw, ch = self.canvas.winfo_width(), self.canvas.winfo_height()
-        if cw<10 or ch<10: return
-        iw, ih = self.original_image.size; sc = min(cw/iw, ch/ih)
-        nw, nh = int(iw*sc), int(ih*sc); self.img_scale = sc
-        self.offset_x, self.offset_y = (cw-nw)//2, (ch-nh)//2
-        self.hit_targets = []
-        
-        dummy_img = Image.new('RGBA', (1, 1))
-        dummy_draw = ImageDraw.Draw(dummy_img)
-
-        try:
-            if self.cache_bg_image is None or self.cache_canvas_size != (nw, nh):
-                self.cache_bg_image = self.original_image.resize((nw, nh), RESAMPLE_BILINEAR)
-                self.cache_canvas_size = (nw, nh)
-                if self.strokes:
-                    d = ImageDraw.Draw(self.cache_bg_image)
-                    for sx, sy, sz, c in self.strokes:
-                        rsx = sx * sc; rsy = sy * sc; rsz = sz * sc; r = rsz/2
-                        d.ellipse((rsx-r, rsy-r, rsx+r, rsy+r), fill=c)
-
-            base = self.cache_bg_image.copy()
-            
-            for i, o in enumerate(self.placed_images):
-                src = self.asset_images[o['src_id']]
-                if src:
-                    w = int(src.width*o['scale'] * sc); h = int(src.height*o['scale'] * sc)
-                    if w>0 and h>0:
-                        rot = src.resize((w, h), RESAMPLE_BILINEAR).rotate(o['angle'], expand=True, resample=RESAMPLE_BILINEAR)
-                        dx = int(o['x']*sc - rot.width/2); dy = int(o['y']*sc - rot.height/2)
-                        base.paste(rot, (dx, dy), rot)
-                        
-                        c0 = dx + self.offset_x; r0 = dy + self.offset_y
-                        c1 = c0 + rot.width; r1 = r0 + rot.height
-                        self.hit_targets.append({'type': 'image', 'index': i, 'bbox': (c0, r0, c1, r1)})
-            
-            for i, o in enumerate(self.text_objects):
-                p_obj = o.copy(); p_obj['size'] = int(o['size'] * sc); p_obj['outline_width'] = int(o.get('outline_width', 0) * sc)
-                p_obj['x'] = 0; p_obj['y'] = 0
-                
-                res = self._calculate_text_geometry(dummy_draw, p_obj)
-                if not res: continue
-                instr, bounds, (bw, bh, offx, offy) = res
-                
-                txt_img = Image.new('RGBA', (bw, bh), (0,0,0,0))
-                d_txt = ImageDraw.Draw(txt_img)
-                
-                out_w = p_obj['outline_width']; out_c = o.get('outline_color', '#ffffff')
-                font = self._get_pil_font(p_obj['font_key'], p_obj['size'])
-                
-                for x in instr:
-                    d_txt.text((x['x'] + offx, x['y'] + offy), x['text'], font=font, fill=o['color'], anchor=x.get('anchor', 'lt'), stroke_width=out_w, stroke_fill=out_c)
-                
-                angle = o.get('angle', 0)
-                if angle != 0: rotated_txt = txt_img.rotate(angle, expand=True, resample=RESAMPLE_BILINEAR)
-                else: rotated_txt = txt_img
-                
-                bx = o['x']*sc; by = o['y']*sc
-                final_x = int(bx - rotated_txt.width/2)
-                final_y = int(by - rotated_txt.height/2)
-                base.paste(rotated_txt, (final_x, final_y), rotated_txt)
-                
-                c0 = final_x + self.offset_x; r0 = final_y + self.offset_y
-                c1 = c0 + rotated_txt.width; r1 = r0 + rotated_txt.height
-                self.hit_targets.append({'type': 'text', 'index': i, 'bbox': (c0, r0, c1, r1)})
-
-            self.display_pil = base
-            self.display_image = ImageTk.PhotoImage(self.display_pil)
-            self.canvas.delete("all")
-            self.canvas.create_image(self.offset_x, self.offset_y, anchor=tk.NW, image=self.display_image)
-
-            if self.selected_item:
-                sel_idx = self.selected_item['index']; sel_type = self.selected_item['type']
-                for item in reversed(self.hit_targets):
-                    if item['type'] == sel_type and item['index'] == sel_idx:
-                        c0, r0, c1, r1 = item['bbox']
-                        self.canvas.create_rectangle(c0, r0, c1, r1, outline="blue", dash=(4,4), width=2)
-                        if sel_type == 'text': obj=self.text_objects[sel_idx]
-                        else: obj=self.placed_images[sel_idx]
-                        ax = obj['x']*sc+self.offset_x; ay = obj['y']*sc+self.offset_y
-                        if sel_type == 'text':
-                             self.canvas.create_line(ax-10, ay, ax+10, ay, fill="red", width=2)
-                             self.canvas.create_line(ax, ay-10, ax, ay+10, fill="red", width=2)
-                        else:
-                             self.canvas.create_oval(ax-5, ay-5, ax+5, ay+5, fill="red")
-                        break
-        except: traceback.print_exc()
-
     def save_image(self):
         if not self.original_image: return
         path = filedialog.asksaveasfilename(defaultextension=".png", filetypes=[("PNG", "*.png")])
@@ -747,31 +844,22 @@ class ZunComiApp:
         dummy_draw = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
         for sx, sy, sz, c in self.strokes: r=sz/2; d.ellipse((sx-r, sy-r, sx+r, sy+r), fill=c)
         for o in self.placed_images:
-            src = self.asset_images[o['src_id']]
-            if src:
-                w = int(src.width*o['scale']); h = int(src.height*o['scale'])
-                if w>0 and h>0:
-                    rot = src.resize((w, h), RESAMPLE_LANCZOS).rotate(o['angle'], expand=True, resample=RESAMPLE_BICUBIC)
-                    dx = int(o['x']-rot.width/2); dy = int(o['y']-rot.height/2)
-                    final.paste(rot, (dx, dy), rot)
+            img_obj = self._render_image_item(o)
+            if img_obj:
+                dx = int(o['x']-img_obj.width/2); dy = int(o['y']-img_obj.height/2)
+                final.paste(img_obj, (dx, dy), img_obj)
         for o in self.text_objects:
-            p_obj = o.copy(); p_obj['x']=0; p_obj['y']=0
-            res = self._calculate_text_geometry(dummy_draw, p_obj)
-            if not res: continue
-            instr, bounds, (bw, bh, offx, offy) = res
-            txt_img = Image.new('RGBA', (bw, bh), (0,0,0,0)); d_txt = ImageDraw.Draw(txt_img)
-            out_w = p_obj.get('outline_width', 0); out_c = o.get('outline_color', '#ffffff')
-            font = self._get_pil_font(p_obj['font_key'], p_obj['size'])
-            for x in instr:
-                d_txt.text((x['x'] + offx, x['y'] + offy), x['text'], font=font, fill=o['color'], anchor=x.get('anchor', 'lt'), stroke_width=out_w, stroke_fill=out_c)
-            angle = o.get('angle', 0)
-            if angle != 0: rotated_txt = txt_img.rotate(angle, expand=True, resample=RESAMPLE_BICUBIC)
-            else: rotated_txt = txt_img
-            final_x = int(o['x'] - rotated_txt.width/2); final_y = int(o['y'] - rotated_txt.height/2)
-            final.paste(rotated_txt, (final_x, final_y), rotated_txt)
+            p_obj = o.copy()
+            img_obj = self._render_text_item(p_obj)
+            if img_obj:
+                final_x = int(o['x'] - img_obj.width/2); final_y = int(o['y'] - img_obj.height/2)
+                final.paste(img_obj, (final_x, final_y), img_obj)
         final.save(path); messagebox.showinfo("OK", "保存しました")
 
 if __name__ == "__main__":
-    root = tk.Tk()
-    app = ZunComiApp(root)
-    root.mainloop()
+    try:
+        root = tk.Tk()
+        app = ZunComiApp(root)
+        root.mainloop()
+    except Exception:
+        traceback.print_exc()
