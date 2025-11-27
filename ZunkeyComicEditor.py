@@ -15,7 +15,7 @@ import math
 # =========================================================
 
 APP_NAME = "Zunkey Comic Editor"
-APP_VERSION = "1.9 PureCenter"
+APP_VERSION = "0.2 Beta"
 
 # フォント設定
 FONT_PATHS = {
